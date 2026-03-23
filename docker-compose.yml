@@ -1,0 +1,322 @@
+# ============================================================
+# PostgreSQL Production Ecosystem
+# Topology: 1 Primary (R/W) + 2 Replicas (RO)
+# HA: Patroni + etcd
+# Backup: pgBackRest → MinIO
+# LB: HAProxy (write:5000 / read:5001)
+# Pooler: pgBouncer (port 6432)
+# ============================================================
+
+x-pgbackrest-common: &pgbackrest-common
+  build:
+    context: ./docker/pgbackrest
+    dockerfile: Dockerfile
+  env_file: .env
+  environment:
+    PGBACKREST_STANZA: ${PGBACKREST_STANZA:-main}
+    PGHOST: ${PGHOST:-localhost}
+  networks:
+    - pg-network
+  restart: unless-stopped
+
+networks:
+  pg-network:
+    driver: bridge
+
+volumes:
+  patroni-primary-data:
+  patroni-replica1-data:
+  patroni-replica2-data:
+  minio-data:
+  etcd-data:
+
+services:
+
+  # ============================================================
+  # etcd — Distributed Configuration Store for Patroni
+  # ============================================================
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.9
+    container_name: etcd
+    hostname: etcd
+    command:
+      - etcd
+      - --name=etcd0
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd0=http://etcd:2380
+      - --initial-cluster-token=pg-cluster-token
+      - --initial-cluster-state=new
+    ports:
+      - "2379:2379"
+    volumes:
+      - etcd-data:/etcd-data
+    networks:
+      - pg-network
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://localhost:2379", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ============================================================
+  # MinIO — S3-compatible Object Storage
+  # ============================================================
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    hostname: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - pg-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # MinIO bucket initialization
+  minio-init:
+    build:
+      context: ./docker/minio-init
+      dockerfile: Dockerfile
+    container_name: minio-init
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      BUCKET_NAME: pg-backups
+    networks:
+      - pg-network
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  # ============================================================
+  # Patroni Primary — PostgreSQL 15 with Write + Read
+  # ============================================================
+  patroni-primary:
+    build:
+      context: ./docker/patroni
+      dockerfile: Dockerfile
+    container_name: patroni-primary
+    hostname: patroni-primary
+    environment:
+      PATRONI_CONFIG: /etc/patroni/patroni.yml
+      PATRONI_SUPERUSER_PASSWORD: ${PATRONI_SUPERUSER_PASSWORD:-postgres123}
+      PATRONI_REPLICATION_PASSWORD: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
+      PATRONI_SCOPE: postgres-cluster
+      PATRONI_NAME: patroni-primary
+    ports:
+      - "8008:8008"
+    volumes:
+      - patroni-primary-data:/var/lib/postgresql/data
+      - ./config/patroni/patroni-primary.yml:/etc/patroni/patroni.yml:ro
+      - ./config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    networks:
+      - pg-network
+    depends_on:
+      etcd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ============================================================
+  # Patroni Replica 1 — PostgreSQL 15 Read Only
+  # ============================================================
+  patroni-replica-1:
+    build:
+      context: ./docker/patroni
+      dockerfile: Dockerfile
+    container_name: patroni-replica-1
+    hostname: patroni-replica-1
+    environment:
+      PATRONI_CONFIG: /etc/patroni/patroni.yml
+      PATRONI_SUPERUSER_PASSWORD: ${PATRONI_SUPERUSER_PASSWORD:-postgres123}
+      PATRONI_REPLICATION_PASSWORD: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
+      PATRONI_SCOPE: postgres-cluster
+      PATRONI_NAME: patroni-replica-1
+    ports:
+      - "8009:8008"
+    volumes:
+      - patroni-replica1-data:/var/lib/postgresql/data
+      - ./config/patroni/patroni-replica-1.yml:/etc/patroni/patroni.yml:ro
+      - ./config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    networks:
+      - pg-network
+    depends_on:
+      etcd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ============================================================
+  # Patroni Replica 2 — PostgreSQL 15 Read Only
+  # ============================================================
+  patroni-replica-2:
+    build:
+      context: ./docker/patroni
+      dockerfile: Dockerfile
+    container_name: patroni-replica-2
+    hostname: patroni-replica-2
+    environment:
+      PATRONI_CONFIG: /etc/patroni/patroni.yml
+      PATRONI_SUPERUSER_PASSWORD: ${PATRONI_SUPERUSER_PASSWORD:-postgres123}
+      PATRONI_REPLICATION_PASSWORD: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
+      PATRONI_SCOPE: postgres-cluster
+      PATRONI_NAME: patroni-replica-2
+    ports:
+      - "8010:8008"
+    volumes:
+      - patroni-replica2-data:/var/lib/postgresql/data
+      - ./config/patroni/patroni-replica-2.yml:/etc/patroni/patroni.yml:ro
+      - ./config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    networks:
+      - pg-network
+    depends_on:
+      etcd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ============================================================
+  # HAProxy — Load Balancer
+  # Port 5000: Write (Primary)
+  # Port 5001: Read (Replicas round-robin)
+  # Port 7000: Stats
+  # ============================================================
+  haproxy:
+    image: haproxy:2.8-alpine
+    container_name: haproxy
+    hostname: haproxy
+    ports:
+      - "5000:5000"
+      - "5001:5001"
+      - "7000:7000"
+    volumes:
+      - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - pg-network
+    depends_on:
+      - patroni-primary
+      - patroni-replica-1
+      - patroni-replica-2
+    healthcheck:
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ============================================================
+  # pgBouncer — Connection Pooler (Port 6432)
+  # ============================================================
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: pgbouncer
+    hostname: pgbouncer
+    environment:
+      DB_HOST: haproxy
+      DB_PORT: 5000
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres123}
+      DB_NAME: ${POSTGRES_DB:-mydb}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 20
+    ports:
+      - "6432:5432"
+    volumes:
+      - ./config/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./config/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    networks:
+      - pg-network
+    depends_on:
+      - haproxy
+    restart: unless-stopped
+
+  # ============================================================
+  # pgBackRest Sidecars — One per PostgreSQL Node
+  # ============================================================
+  pgbackrest-primary:
+    <<: *pgbackrest-common
+    container_name: pgbackrest-primary
+    hostname: pgbackrest-primary
+    environment:
+      PGBACKREST_STANZA: ${PGBACKREST_STANZA:-main}
+      PGHOST: patroni-primary
+      NODE_NAME: patroni-primary
+      IS_PRIMARY: "true"
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - patroni-primary-data:/var/lib/postgresql/data:ro
+      - ./config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    depends_on:
+      - patroni-primary
+      - minio-init
+
+  pgbackrest-replica-1:
+    <<: *pgbackrest-common
+    container_name: pgbackrest-replica-1
+    hostname: pgbackrest-replica-1
+    environment:
+      PGBACKREST_STANZA: ${PGBACKREST_STANZA:-main}
+      PGHOST: patroni-replica-1
+      NODE_NAME: patroni-replica-1
+      IS_PRIMARY: "false"
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - patroni-replica1-data:/var/lib/postgresql/data:ro
+      - ./config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    depends_on:
+      - patroni-replica-1
+      - minio-init
+
+  pgbackrest-replica-2:
+    <<: *pgbackrest-common
+    container_name: pgbackrest-replica-2
+    hostname: pgbackrest-replica-2
+    environment:
+      PGBACKREST_STANZA: ${PGBACKREST_STANZA:-main}
+      PGHOST: patroni-replica-2
+      NODE_NAME: patroni-replica-2
+      IS_PRIMARY: "false"
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - patroni-replica2-data:/var/lib/postgresql/data:ro
+      - ./config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    depends_on:
+      - patroni-replica-2
+      - minio-init

@@ -1,0 +1,77 @@
+scope: postgres-cluster
+namespace: /db/
+name: patroni-replica-2
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: patroni-replica-2:8008
+
+etcd3:
+  hosts: etcd:2379
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        max_connections: 100
+        max_wal_senders: 10
+        max_replication_slots: 10
+        wal_log_hints: "on"
+        archive_mode: "on"
+        archive_command: "pgbackrest --stanza=main archive-push %p"
+        archive_timeout: 60
+        shared_preload_libraries: ""
+
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+
+  pg_hba:
+    - local all all trust
+    - host all all 127.0.0.1/32 trust
+    - host replication replicator 0.0.0.0/0 md5
+    - host all all 0.0.0.0/0 md5
+
+  users:
+    postgres:
+      password: "${PATRONI_SUPERUSER_PASSWORD}"
+      options:
+        - createrole
+        - createdb
+    replicator:
+      password: "${PATRONI_REPLICATION_PASSWORD}"
+      options:
+        - replication
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: patroni-replica-2:5432
+  data_dir: /var/lib/postgresql/data
+  bin_dir: /usr/lib/postgresql/15/bin
+  pgpass: /tmp/pgpass
+  authentication:
+    replication:
+      username: replicator
+      password: "${PATRONI_REPLICATION_PASSWORD}"
+    superuser:
+      username: postgres
+      password: "${PATRONI_SUPERUSER_PASSWORD}"
+    rewind:
+      username: postgres
+      password: "${PATRONI_SUPERUSER_PASSWORD}"
+  parameters:
+    unix_socket_directories: "/var/run/postgresql"
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false
