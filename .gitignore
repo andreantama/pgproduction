@@ -1,0 +1,18 @@
+# Environment variables (never commit)
+.env
+
+# Logs
+logs/*.log
+
+# Docker build artifacts
+.docker/
+
+# Editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
