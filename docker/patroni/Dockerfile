@@ -44,11 +44,14 @@ RUN mkdir -p /var/lib/postgresql/data \
     && mkdir -p /var/lib/pgbackrest \
     && mkdir -p /var/spool/pgbackrest \
     && mkdir -p /etc/pgbackrest \
+    && mkdir -p /run/patroni-bootstrap \
     && chown -R postgres:postgres /var/lib/postgresql \
     && chown -R postgres:postgres /var/log/patroni \
     && chown -R postgres:postgres /var/log/pgbackrest \
     && chown -R postgres:postgres /var/lib/pgbackrest \
-    && chown -R postgres:postgres /var/spool/pgbackrest
+    && chown -R postgres:postgres /var/spool/pgbackrest \
+    && chown postgres:postgres /run/patroni-bootstrap \
+    && chmod 700 /run/patroni-bootstrap
 
 # Create entrypoint script
 COPY entrypoint.sh /entrypoint.sh
