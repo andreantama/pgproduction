@@ -16,9 +16,9 @@ RUN mkdir -p /var/lib/pgbackrest \
     && mkdir -p /etc/pgbackrest \
     && mkdir -p /var/spool/pgbackrest
 
-# Create postgres user (same UID as in patroni container)
-RUN groupadd -r postgres --gid=999 && \
-    useradd -r -g postgres --uid=999 --home-dir=/var/lib/postgresql --shell=/bin/bash postgres
+# Create postgres user (same UID as in patroni container) if not already present
+RUN getent group postgres || groupadd -r postgres --gid=999
+RUN getent passwd postgres || useradd -r -g postgres --uid=999 --home-dir=/var/lib/postgresql --shell=/bin/bash postgres
 
 # Set permissions
 RUN chown -R postgres:postgres /var/lib/pgbackrest \
