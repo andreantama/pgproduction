@@ -1,14 +1,21 @@
 #!/bin/bash
 set -e
 
+# If arguments are passed, execute them directly (e.g., pgbackrest restore/info commands).
+# This allows `docker compose run pgbackrest-primary pgbackrest restore ...` to work
+# without running the normal sidecar init sequence.
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+
 NODE_NAME=${NODE_NAME:-primary}
 PGBACKREST_STANZA=${PGBACKREST_STANZA:-main}
 
 echo "Starting pgBackRest sidecar for node: $NODE_NAME"
 
-# Wait for PostgreSQL to be ready
+# Wait for PostgreSQL to be ready via Unix socket
 echo "Waiting for PostgreSQL to be available..."
-until pg_isready -h "${PGHOST:-localhost}" -p 5432 -U postgres 2>/dev/null; do
+until pg_isready -h /var/run/postgresql -p 5432 -U postgres 2>/dev/null; do
     echo "PostgreSQL not ready, waiting 5 seconds..."
     sleep 5
 done
@@ -33,10 +40,10 @@ fi
 # Setup cron for scheduled backups
 if [ "${IS_PRIMARY:-false}" = "true" ]; then
     echo "Setting up scheduled backups..."
-    (crontab -l 2>/dev/null; echo "0 2 * * * pgbackrest --stanza=${PGBACKREST_STANZA} --type=full backup --log-level-console=info >> /var/log/pgbackrest/cron.log 2>&1") | crontab -
+    echo "0 2 * * * pgbackrest --stanza=${PGBACKREST_STANZA} --type=full backup --log-level-console=info >> /var/log/pgbackrest/cron.log 2>&1" > /tmp/pgbackrest-crontab
     
-    # Start cron
-    cron -f &
+    # Start supercronic (user-space cron, no root required)
+    supercronic /tmp/pgbackrest-crontab &
 fi
 
 echo "pgBackRest sidecar ready. Monitoring..."

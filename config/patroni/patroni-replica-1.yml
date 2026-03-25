@@ -37,19 +37,10 @@ bootstrap:
   pg_hba:
     - local all all trust
     - host all all 127.0.0.1/32 trust
-    - host replication replicator 0.0.0.0/0 md5
-    - host all all 0.0.0.0/0 md5
+    - host replication replicator 0.0.0.0/0 scram-sha-256
+    - host all all 0.0.0.0/0 scram-sha-256
 
-  users:
-    postgres:
-      password: "${PATRONI_SUPERUSER_PASSWORD}"
-      options:
-        - createrole
-        - createdb
-    replicator:
-      password: "${PATRONI_REPLICATION_PASSWORD}"
-      options:
-        - replication
+  post_bootstrap: /usr/local/bin/post_bootstrap.sh
 
 postgresql:
   listen: 0.0.0.0:5432

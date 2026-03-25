@@ -35,6 +35,30 @@ ensure_log_dir() {
     mkdir -p "$(dirname "${LOG_FILE}")"
 }
 
+# Discover which pgbackrest sidecar is co-located with the current Patroni leader.
+# Patroni's /primary endpoint returns HTTP 200 only on the node that holds the leader lock.
+# Node-to-sidecar mapping:
+#   patroni-primary   → pgbackrest-primary
+#   patroni-replica-1 → pgbackrest-replica-1
+#   patroni-replica-2 → pgbackrest-replica-2
+find_primary_sidecar() {
+    local compose_file="${PROJECT_DIR}/docker-compose.yml"
+    declare -A SIDECAR_MAP=(
+        [patroni-primary]=pgbackrest-primary
+        [patroni-replica-1]=pgbackrest-replica-1
+        [patroni-replica-2]=pgbackrest-replica-2
+    )
+    for node in "patroni-primary" "patroni-replica-1" "patroni-replica-2"; do
+        if docker-compose -f "${compose_file}" exec -T "${node}" \
+            curl -sf -o /dev/null http://localhost:8008/primary 2>/dev/null; then
+            echo "${SIDECAR_MAP[$node]}"
+            return 0
+        fi
+    done
+    error "Could not find the Patroni primary node. Is the cluster healthy?"
+    return 1
+}
+
 check_dependencies() {
     for cmd in docker docker-compose; do
         if ! command -v "$cmd" &> /dev/null; then
@@ -53,8 +77,12 @@ run_backup() {
     info "Started at: $(date '+%Y-%m-%d %H:%M:%S')"
     
     log "INFO " "Starting ${backup_type} backup..."
-    
-    docker-compose -f "${PROJECT_DIR}/docker-compose.yml" exec -T pgbackrest-primary \
+
+    local sidecar
+    sidecar=$(find_primary_sidecar) || exit 1
+    info "Using pgBackRest sidecar: ${sidecar}"
+
+    docker-compose -f "${PROJECT_DIR}/docker-compose.yml" exec -T "${sidecar}" \
         pgbackrest --stanza="${STANZA}" \
             --type="${backup_type}" \
             --log-level-console=info \
@@ -72,7 +100,7 @@ run_backup() {
     fi
     
     info "Backup info:"
-    docker-compose -f "${PROJECT_DIR}/docker-compose.yml" exec -T pgbackrest-primary \
+    docker-compose -f "${PROJECT_DIR}/docker-compose.yml" exec -T "${sidecar}" \
         pgbackrest --stanza="${STANZA}" info 2>&1 | tee -a "${LOG_FILE}"
 }
 

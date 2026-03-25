@@ -29,6 +29,9 @@ volumes:
   patroni-replica2-data:
   minio-data:
   etcd-data:
+  patroni-primary-socket:
+  patroni-replica1-socket:
+  patroni-replica2-socket:
 
 services:
 
@@ -79,10 +82,12 @@ services:
       - "9001:9001"
     volumes:
       - minio-data:/data
+      - ./config/minio/certs/public.crt:/root/.minio/certs/public.crt:ro
+      - ./config/minio/certs/private.key:/root/.minio/certs/private.key:ro
     networks:
       - pg-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-fk", "https://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -95,7 +100,7 @@ services:
       dockerfile: Dockerfile
     container_name: minio-init
     environment:
-      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ENDPOINT: https://minio:9000
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
       BUCKET_NAME: pg-backups
@@ -121,10 +126,13 @@ services:
       PATRONI_REPLICATION_PASSWORD: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
       PATRONI_SCOPE: postgres-cluster
       PATRONI_NAME: patroni-primary
+      PG_SUPER_PASS: ${PATRONI_SUPERUSER_PASSWORD:-postgres123}
+      PG_REPL_PASS: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
     ports:
       - "8008:8008"
     volumes:
       - patroni-primary-data:/var/lib/postgresql/data
+      - patroni-primary-socket:/run/postgresql
       - ./config/patroni/patroni-primary.yml:/etc/patroni/patroni.yml:ro
       - ./config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
     networks:
@@ -155,10 +163,13 @@ services:
       PATRONI_REPLICATION_PASSWORD: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
       PATRONI_SCOPE: postgres-cluster
       PATRONI_NAME: patroni-replica-1
+      PG_SUPER_PASS: ${PATRONI_SUPERUSER_PASSWORD:-postgres123}
+      PG_REPL_PASS: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
     ports:
       - "8009:8008"
     volumes:
       - patroni-replica1-data:/var/lib/postgresql/data
+      - patroni-replica1-socket:/run/postgresql
       - ./config/patroni/patroni-replica-1.yml:/etc/patroni/patroni.yml:ro
       - ./config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
     networks:
@@ -189,10 +200,13 @@ services:
       PATRONI_REPLICATION_PASSWORD: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
       PATRONI_SCOPE: postgres-cluster
       PATRONI_NAME: patroni-replica-2
+      PG_SUPER_PASS: ${PATRONI_SUPERUSER_PASSWORD:-postgres123}
+      PG_REPL_PASS: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
     ports:
       - "8010:8008"
     volumes:
       - patroni-replica2-data:/var/lib/postgresql/data
+      - patroni-replica2-socket:/run/postgresql
       - ./config/patroni/patroni-replica-2.yml:/etc/patroni/patroni.yml:ro
       - ./config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
     networks:
@@ -279,7 +293,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
     volumes:
-      - patroni-primary-data:/var/lib/postgresql/data:ro
+      - patroni-primary-data:/var/lib/postgresql/data
+      - patroni-primary-socket:/run/postgresql
       - ./config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
     depends_on:
       - patroni-primary
@@ -298,6 +313,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
     volumes:
       - patroni-replica1-data:/var/lib/postgresql/data:ro
+      - patroni-replica1-socket:/run/postgresql
       - ./config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
     depends_on:
       - patroni-replica-1
@@ -316,6 +332,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
     volumes:
       - patroni-replica2-data:/var/lib/postgresql/data:ro
+      - patroni-replica2-socket:/run/postgresql
       - ./config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
     depends_on:
       - patroni-replica-2

@@ -2,13 +2,24 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install pgBackRest and dependencies
+# Install pgBackRest from PGDG repo (newer version with PostgreSQL 15 support)
 RUN apt-get update && apt-get install -y \
-    pgbackrest \
     curl \
     ca-certificates \
-    cron \
+    gnupg \
+    lsb-release \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y \
+    pgbackrest \
+    postgresql-client-15 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install supercronic (user-space cron daemon — no root required)
+ARG SUPERCRONIC_VERSION=0.2.29
+RUN curl -fsSL "https://github.com/aptible/supercronic/releases/download/v${SUPERCRONIC_VERSION}/supercronic-linux-amd64" \
+    -o /usr/local/bin/supercronic \
+    && chmod +x /usr/local/bin/supercronic
 
 # Create directories
 RUN mkdir -p /var/lib/pgbackrest \

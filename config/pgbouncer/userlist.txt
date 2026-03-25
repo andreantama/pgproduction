@@ -1,2 +1,2 @@
-"postgres" "md5163311300b0732b814a34aabfdfffe62"
-"replicator" "md5688f8c29d6cf61df3f29ec9435550804"
+"postgres" "polo12345"
+"replicator" "polo12345"
