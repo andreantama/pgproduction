@@ -71,6 +71,8 @@ All layers share the same Docker network (`pg-network`) and named volumes.
 docker compose -f services/01-etcd/docker-compose.yml up -d
 # Verify
 docker compose -f services/01-etcd/docker-compose.yml ps
+# down 
+docker compose -f services/01-etcd/docker-compose.yml down
 ```
 
 Wait until `etcd` shows **healthy** before continuing.
@@ -81,6 +83,8 @@ Wait until `etcd` shows **healthy** before continuing.
 docker compose -f services/02-minio/docker-compose.yml up -d
 # Verify
 docker compose -f services/02-minio/docker-compose.yml ps
+# down
+docker compose -f services/02-minio/docker-compose.yml down
 ```
 
 `minio-init` (one-shot container) creates the `pg-backups` bucket
@@ -95,6 +99,8 @@ exists.
 docker compose -f services/03-patroni/docker-compose.yml up -d
 # Verify
 docker compose -f services/03-patroni/docker-compose.yml ps
+# down 
+docker compose -f services/03-patroni/docker-compose.yml down
 ```
 
 Check the Patroni REST API endpoints:
