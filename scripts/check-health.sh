@@ -10,6 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LOG_FILE="${PROJECT_DIR}/logs/health-check.log"
 
+COMPOSE_PGBACKREST="${PROJECT_DIR}/services/04-pgbackrest/docker-compose.yml"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -17,8 +19,6 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-
-COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"
 
 log() {
     local level="$1"; shift
@@ -169,7 +169,7 @@ check_pgbackrest() {
     section "pgBackRest"
     
     local info_output
-    info_output=$(docker-compose -f "${COMPOSE_FILE}" exec -T pgbackrest-primary \
+    info_output=$(docker-compose -f "${COMPOSE_PGBACKREST}" exec -T pgbackrest-primary \
         pgbackrest --stanza="${PGBACKREST_STANZA:-main}" info 2>/dev/null || echo "")
     
     if echo "${info_output}" | grep -q "status: ok"; then

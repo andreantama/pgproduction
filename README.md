@@ -3,13 +3,18 @@
 Production-grade **PostgreSQL ecosystem** — fully containerized with Docker Compose.  
 Features: High Availability (Patroni), Point-in-Time Recovery (pgBackRest + MinIO), Connection Pooling (pgBouncer), and Load Balancing (HAProxy).
 
+> **New in this branch:** each service is isolated in its own
+> `services/<NN>-<name>/docker-compose.yml` file so you can start, stop,
+> update, or scale each layer independently.  
+> See [`docs/`](./docs/) for detailed how-to guides.
+
 ---
 
 ## 🏗️ Architecture Overview
 
 ```
                         ┌─────────────────────────────────────────────────┐
-                        │              Docker Compose Stack                │
+                        │              pg-network (shared)                 │
                         │                                                  │
    Write (port 5000) ──▶│  ┌──────────┐     ┌─────────────────────────┐  │
                         │  │          │     │    patroni-primary       │  │
@@ -36,23 +41,21 @@ Features: High Availability (Patroni), Point-in-Time Recovery (pgBackRest + MinI
 
 ### Component Summary
 
-| Component | Role | Port(s) |
-|-----------|------|---------|
-| **HAProxy** | Load balancer: routes write→primary, read→replicas | 5000 (write), 5001 (read), 7000 (stats) |
-| **pgBouncer** | Connection pooler | 6432 |
-| **patroni-primary** | PostgreSQL 15 (Read/Write) + HA leader | 8008 (API) |
-| **patroni-replica-1** | PostgreSQL 15 (Read Only) | 8009 (API) |
-| **patroni-replica-2** | PostgreSQL 15 (Read Only) | 8010 (API) |
-| **etcd** | Distributed config store for Patroni | 2379 |
-| **pgBackRest (×3)** | Backup sidecar — WAL archive + scheduled full backup | — |
-| **MinIO** | S3-compatible backup storage | 9000 (API), 9001 (Console) |
+| Layer | Component | Role | Port(s) |
+|-------|-----------|------|---------|
+| 1 | **etcd** | Distributed config store for Patroni | 2379 |
+| 2 | **MinIO** | S3-compatible backup storage | 9000 (API), 9001 (Console) |
+| 3 | **Patroni/PostgreSQL** | 1 primary (R/W) + 2 replicas (RO) | 8008–8010 (API) |
+| 4 | **pgBackRest (×3)** | WAL archive + scheduled/on-demand backups | — |
+| 5 | **HAProxy** | Load balancer: write→primary, read→replicas | 5000, 5001, 7000 |
+| 6 | **pgBouncer** | Connection pooler | 6432 |
 
 ---
 
 ## 📋 Prerequisites
 
-- **Docker** ≥ 20.10
-- **Docker Compose** ≥ 2.0 (v2 CLI)
+- **Docker** ≥ 24.x
+- **Docker Compose** ≥ 2.20 (plugin) **or** `docker-compose` v1.29+
 - **curl**, **nc** (for health check script)
 - Minimum 4 GB RAM recommended
 
@@ -66,28 +69,26 @@ Features: High Availability (Patroni), Point-in-Time Recovery (pgBackRest + MinI
 git clone https://github.com/andreantama/pgproduction.git
 cd pgproduction
 
-# Copy and review environment variables
+# Copy and edit environment variables
 cp .env.example .env
-# Edit .env to set your passwords (recommended for production)
+# Fill in all <changeme> values with strong passwords
 ```
 
-### 2. Build and start the stack
+### 2. Start layers in order
 
 ```bash
-docker-compose up -d --build
+docker compose -f services/01-etcd/docker-compose.yml       up -d
+docker compose -f services/02-minio/docker-compose.yml      up -d
+docker compose -f services/03-patroni/docker-compose.yml    up -d --build
+docker compose -f services/04-pgbackrest/docker-compose.yml up -d --build
+docker compose -f services/05-haproxy/docker-compose.yml    up -d
+docker compose -f services/06-pgbouncer/docker-compose.yml  up -d
 ```
 
-### 3. Wait for the cluster to be ready (~60 seconds)
+> See **[docs/01-installation.md](./docs/01-installation.md)** for a
+> detailed step-by-step guide with verification commands.
 
-```bash
-# Watch container status
-docker-compose ps
-
-# Watch Patroni logs
-docker-compose logs -f patroni-primary
-```
-
-### 4. Verify the cluster is healthy
+### 3. Verify everything is healthy
 
 ```bash
 bash scripts/check-health.sh
@@ -139,6 +140,10 @@ PGPASSWORD=postgres123 psql -h localhost -p 5000 -U postgres -c "SELECT client_a
 
 ## 💾 Backup
 
+See **[docs/02-backup-full.md](./docs/02-backup-full.md)** and  
+**[docs/03-backup-incremental.md](./docs/03-backup-incremental.md)**  
+for detailed guides.
+
 ### Manual backup (full)
 
 ```bash
@@ -154,13 +159,14 @@ bash scripts/backup.sh incr
 ### Check backup status
 
 ```bash
-docker-compose exec pgbackrest-primary pgbackrest --stanza=main info
+docker compose -f services/04-pgbackrest/docker-compose.yml \
+  exec pgbackrest-primary pgbackrest --stanza=main info
 ```
 
 ### View pgBackRest logs
 
 ```bash
-docker-compose logs pgbackrest-primary
+docker compose -f services/04-pgbackrest/docker-compose.yml logs pgbackrest-primary
 ```
 
 ---
@@ -191,10 +197,12 @@ docker-compose logs pgbackrest-primary
 
 ```bash
 # Stop containers
-docker-compose stop patroni-primary patroni-replica-1 patroni-replica-2
+docker compose -f services/03-patroni/docker-compose.yml \
+  stop patroni-primary patroni-replica-1 patroni-replica-2
 
 # Run PITR restore
-docker-compose exec pgbackrest-primary \
+docker compose -f services/04-pgbackrest/docker-compose.yml \
+  exec pgbackrest-primary \
   pgbackrest --stanza=main \
     --delta \
     --type=time \
@@ -203,7 +211,8 @@ docker-compose exec pgbackrest-primary \
     restore
 
 # Restart containers
-docker-compose start patroni-primary patroni-replica-1 patroni-replica-2
+docker compose -f services/03-patroni/docker-compose.yml \
+  start patroni-primary patroni-replica-1 patroni-replica-2
 ```
 
 ---
@@ -224,7 +233,7 @@ Shows real-time status of:
 Open in browser: **http://localhost:9001**
 
 - Username: `minioadmin`
-- Password: `minioadmin123`
+- Password: from your `.env`
 
 View backup files stored in the `pg-backups` bucket.
 
@@ -248,21 +257,24 @@ curl -s http://localhost:8008/config | python3 -m json.tool
 
 ## 🔁 Failover Testing
 
+See **[docs/04-failover.md](./docs/04-failover.md)** for the complete guide.
+
 ### Simulate primary failure
 
 ```bash
 # Stop the primary container
-docker-compose stop patroni-primary
+docker compose -f services/03-patroni/docker-compose.yml stop patroni-primary
 
 # Watch Patroni elect a new primary (~30 seconds)
-docker-compose logs -f patroni-replica-1 patroni-replica-2
+docker compose -f services/03-patroni/docker-compose.yml \
+  logs -f patroni-replica-1 patroni-replica-2
 
 # Check which node is now primary
 curl -s http://localhost:8009/primary  # 200 = is primary now
 curl -s http://localhost:8010/primary  # 200 = is primary now
 
 # Restart old primary (will rejoin as replica)
-docker-compose start patroni-primary
+docker compose -f services/03-patroni/docker-compose.yml start patroni-primary
 ```
 
 ---
@@ -271,10 +283,10 @@ docker-compose start patroni-primary
 
 | Script | Description |
 |--------|-------------|
-| `scripts/restore.sh` | Interactive restore — full or PITR. Prompts for timestamp, stops containers, runs restore, restarts and verifies. Logs to `logs/restore.log`. |
-| `scripts/backup.sh` | Trigger manual backup. Accepts type: `full`, `diff`, `incr`. Interactive if no argument. Logs to `logs/backup.log`. |
-| `scripts/check-health.sh` | Comprehensive health check for all cluster components. Logs to `logs/health-check.log`. |
-| `scripts/init-minio.sh` | Initialize MinIO bucket `pg-backups`. Used by the `minio-init` container. |
+| `scripts/restore.sh` | Interactive restore — full or PITR. Logs to `logs/restore.log`. |
+| `scripts/backup.sh` | Trigger manual backup (`full`, `diff`, `incr`). Logs to `logs/backup.log`. |
+| `scripts/check-health.sh` | Comprehensive health check. Logs to `logs/health-check.log`. |
+| `scripts/init-minio.sh` | MinIO bucket init (used by the `minio-init` container). |
 
 ---
 
@@ -298,8 +310,8 @@ docker-compose start patroni-primary
 
 ```bash
 # Check logs for errors
-docker-compose logs etcd
-docker-compose logs patroni-primary
+docker compose -f services/01-etcd/docker-compose.yml     logs etcd
+docker compose -f services/03-patroni/docker-compose.yml  logs patroni-primary
 ```
 
 ### Patroni won't initialize
@@ -309,7 +321,8 @@ docker-compose logs patroni-primary
 curl http://localhost:2379/health
 
 # Check Patroni config
-docker-compose exec patroni-primary cat /etc/patroni/patroni.yml
+docker compose -f services/03-patroni/docker-compose.yml \
+  exec patroni-primary cat /etc/patroni/patroni.yml
 ```
 
 ### pgBackRest can't connect to MinIO
@@ -319,14 +332,19 @@ docker-compose exec patroni-primary cat /etc/patroni/patroni.yml
 curl http://localhost:9000/minio/health/live
 
 # Test pgBackRest connection
-docker-compose exec pgbackrest-primary pgbackrest --stanza=main stanza-check
+docker compose -f services/04-pgbackrest/docker-compose.yml \
+  exec pgbackrest-primary pgbackrest --stanza=main stanza-check
 ```
 
 ### Reset the entire cluster (⚠️ destroys all data)
 
 ```bash
-docker-compose down -v
-docker-compose up -d --build
+docker compose -f services/06-pgbouncer/docker-compose.yml   down -v
+docker compose -f services/05-haproxy/docker-compose.yml     down -v
+docker compose -f services/04-pgbackrest/docker-compose.yml  down -v
+docker compose -f services/03-patroni/docker-compose.yml     down -v
+docker compose -f services/02-minio/docker-compose.yml       down -v
+docker compose -f services/01-etcd/docker-compose.yml        down -v
 ```
 
 ---
@@ -335,40 +353,47 @@ docker-compose up -d --build
 
 ```
 pgproduction/
-├── docker-compose.yml              # Main compose file
-├── .env                            # Environment variables (do not commit!)
 ├── .env.example                    # Example env file
+├── .env                            # Your env (do not commit!)
 ├── README.md                       # This file
 │
+├── services/                       # One docker-compose.yml per service layer
+│   ├── 01-etcd/
+│   │   └── docker-compose.yml      # etcd — also creates pg-network
+│   ├── 02-minio/
+│   │   └── docker-compose.yml      # MinIO + bucket init
+│   ├── 03-patroni/
+│   │   └── docker-compose.yml      # PostgreSQL primary + 2 replicas
+│   ├── 04-pgbackrest/
+│   │   └── docker-compose.yml      # pgBackRest sidecars (×3)
+│   ├── 05-haproxy/
+│   │   └── docker-compose.yml      # HAProxy load balancer
+│   └── 06-pgbouncer/
+│       └── docker-compose.yml      # pgBouncer connection pooler
+│
+├── docs/                           # How-to guides
+│   ├── 01-installation.md
+│   ├── 02-backup-full.md
+│   ├── 03-backup-incremental.md
+│   └── 04-failover.md
+│
 ├── config/
-│   ├── patroni/
-│   │   ├── patroni-primary.yml     # Patroni config for primary
-│   │   ├── patroni-replica-1.yml   # Patroni config for replica-1
-│   │   └── patroni-replica-2.yml   # Patroni config for replica-2
-│   ├── pgbackrest/
-│   │   └── pgbackrest.conf         # pgBackRest config (MinIO/S3 target)
-│   ├── haproxy/
-│   │   └── haproxy.cfg             # HAProxy load balancer config
-│   └── pgbouncer/
-│       ├── pgbouncer.ini           # pgBouncer pooler config
-│       └── userlist.txt            # pgBouncer user auth
+│   ├── patroni/                    # Patroni YAML configs per node
+│   ├── pgbackrest/                 # pgBackRest config (MinIO/S3 target)
+│   ├── haproxy/                    # HAProxy routing rules
+│   ├── pgbouncer/                  # pgBouncer settings + user list
+│   └── minio/certs/                # TLS certs for MinIO
 │
 ├── docker/
-│   ├── patroni/
-│   │   ├── Dockerfile              # PostgreSQL 15 + Patroni image
-│   │   └── entrypoint.sh           # Container entrypoint
-│   ├── pgbackrest/
-│   │   ├── Dockerfile              # pgBackRest sidecar image
-│   │   └── entrypoint.sh           # Sidecar entrypoint (WAL + cron)
-│   └── minio-init/
-│       ├── Dockerfile              # MinIO bucket init image
-│       └── init-minio.sh           # Bucket creation script
+│   ├── patroni/                    # PostgreSQL 15 + Patroni Dockerfile
+│   ├── pgbackrest/                 # pgBackRest sidecar Dockerfile
+│   └── minio-init/                 # MinIO bucket init Dockerfile
 │
 ├── scripts/
-│   ├── restore.sh                  # Interactive restore / PITR script
+│   ├── restore.sh                  # Interactive restore / PITR
 │   ├── backup.sh                   # Manual backup trigger
 │   ├── check-health.sh             # Cluster health check
-│   └── init-minio.sh               # MinIO init (used in container)
+│   └── init-minio.sh               # MinIO init (container use)
 │
 └── logs/                           # Log files (auto-created)
     └── .gitkeep
@@ -396,3 +421,4 @@ pgproduction/
 | HAProxy | 2.8 (Alpine) |
 | pgBouncer | latest |
 | MinIO | latest |
+
