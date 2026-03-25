@@ -1,0 +1,35 @@
+# ============================================================
+# Layer 5 — HAProxy
+# Load Balancer
+#   Port 5000 → write endpoint (primary only)
+#   Port 5001 → read endpoint  (replicas, round-robin)
+#   Port 7000 → stats UI
+#
+# Depends on: Layer 3 (Patroni nodes must be running)
+# ============================================================
+
+networks:
+  pg-network:
+    external: true
+    name: pg-network
+
+services:
+
+  haproxy:
+    image: haproxy:2.8-alpine
+    container_name: haproxy
+    hostname: haproxy
+    ports:
+      - "5000:5000"
+      - "5001:5001"
+      - "7000:7000"
+    volumes:
+      - ../../config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - pg-network
+    healthcheck:
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped

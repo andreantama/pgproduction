@@ -1,0 +1,109 @@
+# ============================================================
+# Layer 4 — pgBackRest
+# Backup sidecars — one per PostgreSQL node
+# Archives WAL and runs scheduled / on-demand backups to MinIO
+#
+# Depends on: Layer 2 (MinIO bucket must exist)
+#             Layer 3 (Patroni nodes must be running)
+# ============================================================
+
+networks:
+  pg-network:
+    external: true
+    name: pg-network
+
+# Data + socket volumes are owned by Layer 3 (Patroni).
+# Declare them external here so pgBackRest can share the
+# PostgreSQL data directory and Unix socket without a second
+# volume definition.
+volumes:
+  pg-patroni-primary-data:
+    external: true
+    name: pg-patroni-primary-data
+  pg-patroni-primary-socket:
+    external: true
+    name: pg-patroni-primary-socket
+  pg-patroni-replica1-data:
+    external: true
+    name: pg-patroni-replica1-data
+  pg-patroni-replica1-socket:
+    external: true
+    name: pg-patroni-replica1-socket
+  pg-patroni-replica2-data:
+    external: true
+    name: pg-patroni-replica2-data
+  pg-patroni-replica2-socket:
+    external: true
+    name: pg-patroni-replica2-socket
+
+# Common settings shared by all three sidecars
+x-pgbackrest-common: &pgbackrest-common
+  build:
+    context: ../../docker/pgbackrest
+    dockerfile: Dockerfile
+  env_file: ../../.env
+  environment:
+    PGBACKREST_STANZA: ${PGBACKREST_STANZA:-main}
+  networks:
+    - pg-network
+  restart: unless-stopped
+
+services:
+
+  # ----------------------------------------------------------
+  # pgBackRest sidecar for Primary
+  # Runs stanza-create, initial full backup, and cron schedule
+  # ----------------------------------------------------------
+  pgbackrest-primary:
+    <<: *pgbackrest-common
+    container_name: pgbackrest-primary
+    hostname: pgbackrest-primary
+    environment:
+      PGHOST: patroni-primary
+      NODE_NAME: patroni-primary
+      IS_PRIMARY: "true"
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - pg-patroni-primary-data:/var/lib/postgresql/data
+      - pg-patroni-primary-socket:/run/postgresql
+      - ../../config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+
+  # ----------------------------------------------------------
+  # pgBackRest sidecar for Replica 1
+  # The data directory is mounted read-only because replicas
+  # must not have write access to PostgreSQL data files.
+  # ----------------------------------------------------------
+  pgbackrest-replica-1:
+    <<: *pgbackrest-common
+    container_name: pgbackrest-replica-1
+    hostname: pgbackrest-replica-1
+    environment:
+      PGHOST: patroni-replica-1
+      NODE_NAME: patroni-replica-1
+      IS_PRIMARY: "false"
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - pg-patroni-replica1-data:/var/lib/postgresql/data:ro
+      - pg-patroni-replica1-socket:/run/postgresql
+      - ../../config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+
+  # ----------------------------------------------------------
+  # pgBackRest sidecar for Replica 2
+  # The data directory is mounted read-only (same reason as above).
+  # ----------------------------------------------------------
+  pgbackrest-replica-2:
+    <<: *pgbackrest-common
+    container_name: pgbackrest-replica-2
+    hostname: pgbackrest-replica-2
+    environment:
+      PGHOST: patroni-replica-2
+      NODE_NAME: patroni-replica-2
+      IS_PRIMARY: "false"
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - pg-patroni-replica2-data:/var/lib/postgresql/data:ro
+      - pg-patroni-replica2-socket:/run/postgresql
+      - ../../config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro

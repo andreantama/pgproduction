@@ -11,6 +11,10 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LOG_FILE="${PROJECT_DIR}/logs/backup.log"
 STANZA="${PGBACKREST_STANZA:-main}"
 
+# Compose files for each service layer
+COMPOSE_PATRONI="${PROJECT_DIR}/services/03-patroni/docker-compose.yml"
+COMPOSE_PGBACKREST="${PROJECT_DIR}/services/04-pgbackrest/docker-compose.yml"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -42,14 +46,13 @@ ensure_log_dir() {
 #   patroni-replica-1 → pgbackrest-replica-1
 #   patroni-replica-2 → pgbackrest-replica-2
 find_primary_sidecar() {
-    local compose_file="${PROJECT_DIR}/docker-compose.yml"
     declare -A SIDECAR_MAP=(
         [patroni-primary]=pgbackrest-primary
         [patroni-replica-1]=pgbackrest-replica-1
         [patroni-replica-2]=pgbackrest-replica-2
     )
     for node in "patroni-primary" "patroni-replica-1" "patroni-replica-2"; do
-        if docker-compose -f "${compose_file}" exec -T "${node}" \
+        if docker-compose -f "${COMPOSE_PATRONI}" exec -T "${node}" \
             curl -sf -o /dev/null http://localhost:8008/primary 2>/dev/null; then
             echo "${SIDECAR_MAP[$node]}"
             return 0
@@ -82,7 +85,7 @@ run_backup() {
     sidecar=$(find_primary_sidecar) || exit 1
     info "Using pgBackRest sidecar: ${sidecar}"
 
-    docker-compose -f "${PROJECT_DIR}/docker-compose.yml" exec -T "${sidecar}" \
+    docker-compose -f "${COMPOSE_PGBACKREST}" exec -T "${sidecar}" \
         pgbackrest --stanza="${STANZA}" \
             --type="${backup_type}" \
             --log-level-console=info \
@@ -100,7 +103,7 @@ run_backup() {
     fi
     
     info "Backup info:"
-    docker-compose -f "${PROJECT_DIR}/docker-compose.yml" exec -T "${sidecar}" \
+    docker-compose -f "${COMPOSE_PGBACKREST}" exec -T "${sidecar}" \
         pgbackrest --stanza="${STANZA}" info 2>&1 | tee -a "${LOG_FILE}"
 }
 

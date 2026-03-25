@@ -11,6 +11,12 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LOG_FILE="${PROJECT_DIR}/logs/restore.log"
 STANZA="${PGBACKREST_STANZA:-main}"
 
+# Compose files for each service layer
+COMPOSE_ETCD="${PROJECT_DIR}/services/01-etcd/docker-compose.yml"
+COMPOSE_PATRONI="${PROJECT_DIR}/services/03-patroni/docker-compose.yml"
+COMPOSE_PGBACKREST="${PROJECT_DIR}/services/04-pgbackrest/docker-compose.yml"
+COMPOSE_HAPROXY="${PROJECT_DIR}/services/05-haproxy/docker-compose.yml"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -63,26 +69,31 @@ check_dependencies() {
 }
 
 check_containers_running() {
-    local compose_file="${PROJECT_DIR}/docker-compose.yml"
-    if ! docker-compose -f "${compose_file}" ps --services --filter "status=running" | grep -q "patroni-primary"; then
+    if ! docker-compose -f "${COMPOSE_PATRONI}" ps --services --filter "status=running" | grep -q "patroni-primary"; then
         warn "Some containers may not be running. Proceeding anyway..."
     fi
 }
 
 stop_postgres_containers() {
-    local compose_file="${PROJECT_DIR}/docker-compose.yml"
     info "Stopping PostgreSQL and pgBackRest containers..."
-    docker-compose -f "${compose_file}" stop \
+    docker-compose -f "${COMPOSE_PATRONI}" stop \
         patroni-primary patroni-replica-1 patroni-replica-2 \
+        2>&1 | tee -a "${LOG_FILE}" || {
+        error "Failed to stop Patroni containers"
+        return 1
+    }
+    docker-compose -f "${COMPOSE_PGBACKREST}" stop \
         pgbackrest-primary pgbackrest-replica-1 pgbackrest-replica-2 \
-        2>&1 | tee -a "${LOG_FILE}"
+        2>&1 | tee -a "${LOG_FILE}" || {
+        error "Failed to stop pgBackRest containers"
+        return 1
+    }
     log "INFO " "PostgreSQL and pgBackRest containers stopped"
 }
 
 start_postgres_containers() {
-    local compose_file="${PROJECT_DIR}/docker-compose.yml"
     info "Starting PostgreSQL containers..."
-    docker-compose -f "${compose_file}" start patroni-primary patroni-replica-1 patroni-replica-2 2>&1 | tee -a "${LOG_FILE}"
+    docker-compose -f "${COMPOSE_PATRONI}" start patroni-primary patroni-replica-1 patroni-replica-2 2>&1 | tee -a "${LOG_FILE}"
     log "INFO " "PostgreSQL containers started"
 }
 
@@ -91,7 +102,7 @@ wait_for_postgres() {
     local attempt=1
     info "Waiting for PostgreSQL to be ready..."
     while [ $attempt -le $max_attempts ]; do
-        if docker-compose -f "${PROJECT_DIR}/docker-compose.yml" exec -T patroni-primary \
+        if docker-compose -f "${COMPOSE_PATRONI}" exec -T patroni-primary \
             pg_isready -U postgres -h localhost > /dev/null 2>&1; then
             info "PostgreSQL is ready!"
             return 0
@@ -106,7 +117,7 @@ wait_for_postgres() {
 
 verify_connection() {
     info "Verifying database connection..."
-    if docker-compose -f "${PROJECT_DIR}/docker-compose.yml" exec -T patroni-primary \
+    if docker-compose -f "${COMPOSE_PATRONI}" exec -T patroni-primary \
         psql -U postgres -d postgres -c "SELECT version();" > /dev/null 2>&1; then
         info "✅ Database connection verified successfully!"
         return 0
@@ -125,16 +136,15 @@ verify_connection() {
 # maximum_lag_on_failover bytes.  Deleting all keys forces a fresh bootstrap.
 clear_dcs_state() {
     info "Clearing stale Patroni cluster state from etcd (namespace: /db/postgres-cluster)..."
-    docker-compose -f "${PROJECT_DIR}/docker-compose.yml" exec -T etcd \
+    docker-compose -f "${COMPOSE_ETCD}" exec -T etcd \
         etcdctl --endpoints=http://localhost:2379 del /db/postgres-cluster --prefix \
         2>&1 | tee -a "${LOG_FILE}" || true
     log "INFO " "etcd cluster state cleared"
 }
 
 start_patroni_primary() {
-    local compose_file="${PROJECT_DIR}/docker-compose.yml"
     info "Starting patroni-primary container..."
-    docker-compose -f "${compose_file}" start patroni-primary 2>&1 | tee -a "${LOG_FILE}"
+    docker-compose -f "${COMPOSE_PATRONI}" start patroni-primary 2>&1 | tee -a "${LOG_FILE}"
     log "INFO " "patroni-primary container started"
 }
 
@@ -161,19 +171,25 @@ wait_for_primary_leader() {
 }
 
 start_patroni_replicas() {
-    local compose_file="${PROJECT_DIR}/docker-compose.yml"
     info "Starting replica and pgBackRest sidecar containers..."
-    docker-compose -f "${compose_file}" start \
+    docker-compose -f "${COMPOSE_PATRONI}" start \
         patroni-replica-1 patroni-replica-2 \
+        2>&1 | tee -a "${LOG_FILE}" || {
+        error "Failed to start Patroni replica containers"
+        return 1
+    }
+    docker-compose -f "${COMPOSE_PGBACKREST}" start \
         pgbackrest-primary pgbackrest-replica-1 pgbackrest-replica-2 \
-        2>&1 | tee -a "${LOG_FILE}"
+        2>&1 | tee -a "${LOG_FILE}" || {
+        error "Failed to start pgBackRest containers"
+        return 1
+    }
     log "INFO " "Replica and pgBackRest containers started"
 }
 
 restart_haproxy() {
-    local compose_file="${PROJECT_DIR}/docker-compose.yml"
     info "Restarting HAProxy to clear stale health-check state..."
-    docker-compose -f "${compose_file}" restart haproxy 2>&1 | tee -a "${LOG_FILE}"
+    docker-compose -f "${COMPOSE_HAPROXY}" restart haproxy 2>&1 | tee -a "${LOG_FILE}"
     log "INFO " "HAProxy restarted"
 }
 
@@ -228,7 +244,7 @@ echo "Stopping PostgreSQL cleanly for Patroni handoff..."
 /usr/lib/postgresql/15/bin/pg_ctl -D /var/lib/postgresql/data stop -m fast
 echo "Done. Data directory is promoted and ready for Patroni."
 '
-    docker-compose -f "${PROJECT_DIR}/docker-compose.yml" run --rm --no-deps \
+    docker-compose -f "${COMPOSE_PATRONI}" run --rm --no-deps \
         -e PGHOST=/var/run/postgresql \
         -e PGPORT=5432 \
         --entrypoint /bin/bash \
@@ -242,7 +258,7 @@ echo "Done. Data directory is promoted and ready for Patroni."
 
 show_backup_list() {
     info "Fetching available backups from MinIO..."
-    docker-compose -f "${PROJECT_DIR}/docker-compose.yml" exec -T pgbackrest-primary \
+    docker-compose -f "${COMPOSE_PGBACKREST}" exec -T pgbackrest-primary \
         pgbackrest --stanza="${STANZA}" info 2>&1 | tee -a "${LOG_FILE}" || {
         warn "Could not fetch backup list. Please check pgBackRest configuration."
     }
@@ -266,7 +282,7 @@ do_full_restore() {
     stop_postgres_containers
     
     info "Step 2: Running full restore..."
-    docker-compose -f "${PROJECT_DIR}/docker-compose.yml" run --rm --no-deps \
+    docker-compose -f "${COMPOSE_PGBACKREST}" run --rm --no-deps \
         -e PGBACKREST_STANZA="${STANZA}" \
         pgbackrest-primary \
         pgbackrest --stanza="${STANZA}" --delta restore 2>&1 | tee -a "${LOG_FILE}"
@@ -327,7 +343,7 @@ do_pitr_restore() {
     stop_postgres_containers
     
     info "Step 2: Running PITR restore to: ${target_time}..."
-    docker-compose -f "${PROJECT_DIR}/docker-compose.yml" run --rm --no-deps \
+    docker-compose -f "${COMPOSE_PGBACKREST}" run --rm --no-deps \
         -e PGBACKREST_STANZA="${STANZA}" \
         pgbackrest-primary \
         pgbackrest --stanza="${STANZA}" \

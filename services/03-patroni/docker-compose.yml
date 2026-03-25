@@ -1,0 +1,132 @@
+# ============================================================
+# Layer 3 — Patroni / PostgreSQL 15
+# 1 Primary (R/W) + 2 Replicas (RO) with automatic failover
+#
+# Depends on: Layer 1 (etcd must be healthy)
+# ============================================================
+
+networks:
+  pg-network:
+    external: true
+    name: pg-network
+
+volumes:
+  pg-patroni-primary-data:
+    name: pg-patroni-primary-data
+  pg-patroni-primary-socket:
+    name: pg-patroni-primary-socket
+  pg-patroni-replica1-data:
+    name: pg-patroni-replica1-data
+  pg-patroni-replica1-socket:
+    name: pg-patroni-replica1-socket
+  pg-patroni-replica2-data:
+    name: pg-patroni-replica2-data
+  pg-patroni-replica2-socket:
+    name: pg-patroni-replica2-socket
+
+services:
+
+  # ----------------------------------------------------------
+  # Primary node — accepts reads and writes
+  # ----------------------------------------------------------
+  patroni-primary:
+    build:
+      context: ../../docker/patroni
+      dockerfile: Dockerfile
+    container_name: patroni-primary
+    hostname: patroni-primary
+    env_file: ../../.env
+    environment:
+      PATRONI_CONFIG: /etc/patroni/patroni.yml
+      PATRONI_SUPERUSER_PASSWORD: ${PATRONI_SUPERUSER_PASSWORD:-postgres123}
+      PATRONI_REPLICATION_PASSWORD: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
+      PATRONI_SCOPE: postgres-cluster
+      PATRONI_NAME: patroni-primary
+      PG_SUPER_PASS: ${PATRONI_SUPERUSER_PASSWORD:-postgres123}
+      PG_REPL_PASS: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
+    ports:
+      - "8008:8008"
+    volumes:
+      - pg-patroni-primary-data:/var/lib/postgresql/data
+      - pg-patroni-primary-socket:/run/postgresql
+      - ../../config/patroni/patroni-primary.yml:/etc/patroni/patroni.yml:ro
+      - ../../config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    networks:
+      - pg-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # Replica 1 — read-only standby
+  # ----------------------------------------------------------
+  patroni-replica-1:
+    build:
+      context: ../../docker/patroni
+      dockerfile: Dockerfile
+    container_name: patroni-replica-1
+    hostname: patroni-replica-1
+    env_file: ../../.env
+    environment:
+      PATRONI_CONFIG: /etc/patroni/patroni.yml
+      PATRONI_SUPERUSER_PASSWORD: ${PATRONI_SUPERUSER_PASSWORD:-postgres123}
+      PATRONI_REPLICATION_PASSWORD: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
+      PATRONI_SCOPE: postgres-cluster
+      PATRONI_NAME: patroni-replica-1
+      PG_SUPER_PASS: ${PATRONI_SUPERUSER_PASSWORD:-postgres123}
+      PG_REPL_PASS: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
+    ports:
+      - "8009:8008"
+    volumes:
+      - pg-patroni-replica1-data:/var/lib/postgresql/data
+      - pg-patroni-replica1-socket:/run/postgresql
+      - ../../config/patroni/patroni-replica-1.yml:/etc/patroni/patroni.yml:ro
+      - ../../config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    networks:
+      - pg-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # Replica 2 — read-only standby
+  # ----------------------------------------------------------
+  patroni-replica-2:
+    build:
+      context: ../../docker/patroni
+      dockerfile: Dockerfile
+    container_name: patroni-replica-2
+    hostname: patroni-replica-2
+    env_file: ../../.env
+    environment:
+      PATRONI_CONFIG: /etc/patroni/patroni.yml
+      PATRONI_SUPERUSER_PASSWORD: ${PATRONI_SUPERUSER_PASSWORD:-postgres123}
+      PATRONI_REPLICATION_PASSWORD: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
+      PATRONI_SCOPE: postgres-cluster
+      PATRONI_NAME: patroni-replica-2
+      PG_SUPER_PASS: ${PATRONI_SUPERUSER_PASSWORD:-postgres123}
+      PG_REPL_PASS: ${PATRONI_REPLICATION_PASSWORD:-replicator123}
+    ports:
+      - "8010:8008"
+    volumes:
+      - pg-patroni-replica2-data:/var/lib/postgresql/data
+      - pg-patroni-replica2-socket:/run/postgresql
+      - ../../config/patroni/patroni-replica-2.yml:/etc/patroni/patroni.yml:ro
+      - ../../config/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+    networks:
+      - pg-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped

@@ -1,0 +1,61 @@
+# ============================================================
+# Layer 2 — MinIO
+# S3-compatible Object Storage for pgBackRest backups
+#
+# Depends on: Layer 1 (pg-network must exist)
+# ============================================================
+
+networks:
+  pg-network:
+    external: true
+    name: pg-network
+
+volumes:
+  pg-minio-data:
+    name: pg-minio-data
+
+services:
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    hostname: minio
+    command: server /data --console-address ":9001"
+    env_file: ../../.env
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - pg-minio-data:/data
+      - ../../config/minio/certs/public.crt:/root/.minio/certs/public.crt:ro
+      - ../../config/minio/certs/private.key:/root/.minio/certs/private.key:ro
+    networks:
+      - pg-network
+    healthcheck:
+      test: ["CMD", "curl", "-fk", "https://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # One-shot container — creates the pg-backups bucket on first run
+  minio-init:
+    build:
+      context: ../../docker/minio-init
+      dockerfile: Dockerfile
+    container_name: minio-init
+    env_file: ../../.env
+    environment:
+      MINIO_ENDPOINT: https://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      BUCKET_NAME: pg-backups
+    networks:
+      - pg-network
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
